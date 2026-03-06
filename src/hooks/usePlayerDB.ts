@@ -3,6 +3,17 @@ import { PlayerDBEntry } from '../data/types';
 
 const DB_KEY = 'traopd1_players_db';
 
+// Validate that parsed data is an array of player entries
+function isValidPlayerData(data: unknown): data is PlayerDBEntry[] {
+  if (!Array.isArray(data)) return false;
+  return data.every(item =>
+    item &&
+    typeof item === 'object' &&
+    typeof item.puuid === 'string' &&
+    typeof item.name === 'string'
+  );
+}
+
 export function usePlayerDB() {
   const [players, setPlayers] = useState<PlayerDBEntry[]>([]);
 
@@ -10,6 +21,18 @@ export function usePlayerDB() {
     const stored = localStorage.getItem(DB_KEY);
     if (stored) {
       try { setPlayers(JSON.parse(stored)); } catch (e) { console.error('Failed to parse player DB from localStorage:', e); }
+      try {
+        const parsed = JSON.parse(stored);
+        if (isValidPlayerData(parsed)) {
+          setPlayers(parsed);
+        } else {
+          console.warn('[usePlayerDB] Invalid data in localStorage, clearing');
+          localStorage.removeItem(DB_KEY);
+        }
+      } catch (e) {
+        console.error('[usePlayerDB] Failed to parse localStorage data:', e);
+        localStorage.removeItem(DB_KEY);
+      }
     }
   }, []);
 

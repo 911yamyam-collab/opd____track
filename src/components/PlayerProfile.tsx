@@ -172,7 +172,7 @@ export default function PlayerProfile({
           {/* Header with optional map background — pulled up behind sticky close row */}
           <div className="relative overflow-hidden rounded-t-lg -mt-9">
             {mapImage && (
-              <div className="absolute inset-0 bg-cover bg-center" style={{ backgroundImage: `url('${mapImage.replace(/'/g, "\\'")}')` }}>
+              <div className="absolute inset-0 bg-cover bg-center" style={{ backgroundImage: `url('${mapImage.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}')` }}>
                 <div className="absolute inset-0 bg-gradient-to-b from-[#0f1923]/80 to-[#0f1923]" />
               </div>
             )}

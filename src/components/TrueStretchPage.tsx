@@ -13,6 +13,15 @@ export default function TrueStretchPage() {
     { label: '16:10', res: '1680x1050', fov: '103', desc: 'Wide stretch' },
   ];
 
+  const applyResolution = () => {
+    if (stretchType === 'custom') {
+      setResolution(`${customW}x${customH}`);
+      return;
+    }
+    const preset = presets.find(p => p.label === stretchType);
+    setResolution(preset ? preset.res : resolution);
+  };
+
   return (
     <div className="p-6 md:px-12">
       <h1 className="text-xl font-bold uppercase tracking-wider mb-6 flex items-center gap-2">
@@ -57,7 +66,7 @@ export default function TrueStretchPage() {
             </div>
           )}
           <button
-            onClick={() => setResolution(stretchType === 'custom' ? `${customW}x${customH}` : presets[0].res)}
+            onClick={applyResolution}
             className="w-full bg-accent-cyan/10 text-accent-cyan border border-accent-cyan/30 rounded py-2.5 text-sm uppercase font-bold tracking-wider hover:bg-accent-cyan/20 transition-colors"
           >Apply Stretch</button>
         </div>

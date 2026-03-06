@@ -9,7 +9,7 @@ export function usePlayerDB() {
   useEffect(() => {
     const stored = localStorage.getItem(DB_KEY);
     if (stored) {
-      try { setPlayers(JSON.parse(stored)); } catch {}
+      try { setPlayers(JSON.parse(stored)); } catch (e) { console.error('Failed to parse player DB from localStorage:', e); }
     }
   }, []);
 

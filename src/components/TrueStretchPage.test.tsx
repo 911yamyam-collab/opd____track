@@ -31,6 +31,12 @@ describe('TrueStretchPage', () => {
     expect(screen.getAllByText('1024x768')).toHaveLength(2);
   });
 
+  it('uses selected stretch type when applying default preset', () => {
+    render(<TrueStretchPage />);
+    fireEvent.click(screen.getByRole('button', { name: '5:4' }));
+    fireEvent.click(screen.getByText('Apply Stretch'));
+    expect(screen.getAllByText('1280x1024')).toHaveLength(2);
+  });
   it('Apply Stretch uses correct preset for selected stretch type', () => {
     render(<TrueStretchPage />);
     // Select 5:4 stretch type from the ratio buttons

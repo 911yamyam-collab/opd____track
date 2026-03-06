@@ -36,10 +36,14 @@ export interface Player {
   skins: PlayerSkins | null;
   isLocal: boolean;
   teamId: string;
+  kills?: number;
+  deaths?: number;
+  assists?: number;
 }
 
 export interface LiveMatchData {
   mapName: string;
+  mapImage: string | null;
   gameMode: string;
   isPregame: boolean;
   myTeam: Player[];
@@ -51,6 +55,7 @@ export interface LiveMatchData {
 export interface MatchHistoryEntry {
   matchId: string;
   mapName: string;
+  mapImage: string | null;
   gameMode: string;
   result: 'win' | 'loss';
   score: string;
@@ -61,6 +66,22 @@ export interface MatchHistoryEntry {
   assists: number;
   rrChange: number;
   time: string;
+}
+
+export interface PlayerDBEntry {
+  puuid: string;
+  name: string;
+  tag: string;
+  category: 'friend' | 'toxic' | 'avoid';
+  note: string;
+  mapName: string;
+  mapImage: string | null;
+  agentName: string;
+  agentIconUrl: string | null;
+  rankName: string;
+  addedAt: number;
+  matchId?: string;
+  incognito?: boolean;
 }
 
 export type GameState = 'NOT_RUNNING' | 'MENUS' | 'PREGAME' | 'INGAME' | 'DISCONNECTED' | 'loading';

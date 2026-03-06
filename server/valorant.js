@@ -32,7 +32,9 @@ async function batchedPromises(items, fn, concurrency = 3) {
   const results = [];
   for (let i = 0; i < items.length; i += concurrency) {
     const batch = items.slice(i, i + concurrency);
-    results.push(...(await Promise.all(batch.map(fn))));
+    // allSettled so one failure never kills the whole batch
+    const settled = await Promise.allSettled(batch.map(fn));
+    results.push(...settled.map(r => r.status === 'fulfilled' ? r.value : null));
   }
   return results;
 }
@@ -271,19 +273,28 @@ async function getContent() {
     }
 
     const mapUrls = {};
+    const mapImages = {};
     for (const m of mapsRes.data.data) {
-      if (m.mapUrl) mapUrls[m.mapUrl.toLowerCase()] = m.displayName;
+      if (m.mapUrl) {
+        mapUrls[m.mapUrl.toLowerCase()] = m.displayName;
+        mapImages[m.displayName] = m.stylizedBackgroundImage || m.splash || m.listViewIconTall || m.listViewIcon || null;
+      }
     }
     const weaponSkins = {};
     const weaponNames = {};
+    const weaponIcons = {}; // weapon UUID -> default display icon
     for (const w of weaponsRes.data.data) {
-      weaponNames[w.uuid.toLowerCase()] = w.displayName;
+      const wid = w.uuid.toLowerCase();
+      weaponNames[wid] = w.displayName;
+      weaponIcons[wid] = w.displayIcon || null;
       if (w.skins) {
         for (const skin of w.skins) {
+          // Use weapon's own displayIcon as fallback when skin has no icon
+          const fallbackIcon = w.displayIcon || null;
           if (skin.uuid) {
             weaponSkins[skin.uuid.toLowerCase()] = {
               name: skin.displayName,
-              iconUrl: skin.levels?.[0]?.displayIcon || null,
+              iconUrl: skin.levels?.[0]?.displayIcon || fallbackIcon,
             };
           }
           if (skin.levels) {
@@ -291,7 +302,7 @@ async function getContent() {
               if (level.uuid) {
                 weaponSkins[level.uuid.toLowerCase()] = {
                   name: skin.displayName,
-                  iconUrl: level.displayIcon || skin.levels?.[0]?.displayIcon || null,
+                  iconUrl: level.displayIcon || skin.levels?.[0]?.displayIcon || fallbackIcon,
                 };
               }
             }
@@ -300,7 +311,7 @@ async function getContent() {
       }
     }
 
-    contentCache = { agents, mapUrls, weaponSkins, weaponNames, timestamp: now };
+    contentCache = { agents, mapUrls, mapImages, weaponSkins, weaponNames, weaponIcons, timestamp: now };
     return contentCache;
   } catch (e) {
     return contentCache || { agents: {}, mapUrls: {}, weaponSkins: {}, weaponNames: {}, timestamp: now };
@@ -334,20 +345,49 @@ async function getPlayerRank(puuid, seasonId) {
   let rankTier = 0, rr = 0, leaderboard = 0, peakRankTier = 0, wr = 'N/A', games = 0;
 
   try {
-    const seasonData = data?.QueueSkills?.competitive?.SeasonalInfoBySeasonID?.[seasonId];
+    const allSeasons = data?.QueueSkills?.competitive?.SeasonalInfoBySeasonID || {};
+
+    // PRIMARY: LatestCompetitiveUpdate gives most-accurate current rank/RR
+    const latest = data.LatestCompetitiveUpdate;
+    if (latest?.TierAfterUpdate >= 3) {
+      rankTier = latest.TierAfterUpdate;
+      rr = latest.RankedRatingAfterUpdate ?? 0;
+    }
+
+    // Seasonal data for games/WR/leaderboard + rank fallback
+    const seasonData = seasonId ? allSeasons[seasonId] : null;
     if (seasonData) {
-      const tier = parseInt(seasonData.CompetitiveTier || 0);
-      rankTier = tier >= 3 ? tier : 0;
-      rr = seasonData.RankedRating || 0;
-      leaderboard = seasonData.LeaderboardRank || 0;
       games = seasonData.NumberOfGames || 0;
       const wins = seasonData.NumberOfWinsWithPlacements || 0;
       wr = games > 0 ? Math.round((wins / games) * 100) : 0;
+      leaderboard = seasonData.LeaderboardRank || 0;
+      // Use seasonal rank only as fallback if LatestCompetitiveUpdate was missing
+      if (rankTier === 0) {
+        const tier = parseInt(seasonData.CompetitiveTier || 0);
+        rankTier = tier >= 3 ? tier : 0;
+        rr = seasonData.RankedRating || 0;
+      }
+    }
+
+    // If still no rank, scan all seasons for most recent one with rank data
+    if (rankTier === 0) {
+      for (const [, sdata] of Object.entries(allSeasons).reverse()) {
+        const t = parseInt(sdata.CompetitiveTier || 0);
+        if (t >= 3) {
+          rankTier = t;
+          rr = sdata.RankedRating || 0;
+          if (!games) {
+            games = sdata.NumberOfGames || 0;
+            const wins = sdata.NumberOfWinsWithPlacements || 0;
+            wr = games > 0 ? Math.round((wins / games) * 100) : 0;
+          }
+          break;
+        }
+      }
     }
 
     // Peak rank across all seasons
     let maxRank = rankTier;
-    const allSeasons = data?.QueueSkills?.competitive?.SeasonalInfoBySeasonID || {};
     for (const [sid, sdata] of Object.entries(allSeasons)) {
       const wbt = sdata.WinsByTier;
       if (wbt) {
@@ -444,32 +484,56 @@ async function getLoadouts(matchId, isPregame) {
 }
 
 function extractSkins(loadoutData, content) {
-  // Returns map of puuid -> { phantom, vandal, operator, melee } skin info
-  const WEAPON_IDS = {
-    phantom: '9c82e19d-4575-0200-1a81-3eacf00cf872',
-    vandal: 'ee8369b5-4395-2e9e-4db0-c7a27a1e6e90',
-    operator: 'a8c5df50-4f50-cbae-5b77-01a3b3fe7b66',
-    melee: '2f59173c-4bed-b6c3-2191-dea9b58be9c7',
+  // Build a dynamic map: weapon UUID (lowercase) -> slot key
+  // This avoids hardcoded UUIDs by resolving names from the content API
+  const NAME_TO_KEY = { phantom: 'phantom', vandal: 'vandal', operator: 'operator', melee: 'melee' };
+  // Fallback hardcoded UUIDs in case content isn't loaded yet
+  const FALLBACK_IDS = {
+    '9c82e19d-4575-0200-1a81-3eacf00cf872': 'phantom',
+    'ee8369b5-4395-2e9e-4db0-c7a27a1e6e90': 'vandal',
+    'a8c5df50-4f50-cbae-5b77-01a3b3fe7b66': 'operator',
+    '2f59173c-4bed-b6c3-2191-dea9b58be9c7': 'melee',
   };
+
+  const uuidToKey = { ...FALLBACK_IDS };
+  for (const [uuid, name] of Object.entries(content.weaponNames || {})) {
+    const lname = (name || '').toLowerCase();
+    if (NAME_TO_KEY[lname]) uuidToKey[uuid.toLowerCase()] = NAME_TO_KEY[lname];
+  }
 
   const result = {};
   const loadouts = loadoutData?.Loadouts || loadoutData?.PreGameLoadouts || [];
 
   for (const playerLoadout of loadouts) {
     const puuid = playerLoadout.Subject;
-    const items = playerLoadout.Loadout?.Items || {};
-    const skins = {};
+    const rawItems = playerLoadout.Loadout?.Items || {};
+    const skins = { phantom: null, vandal: null, operator: null, melee: null };
 
-    for (const [weaponKey, weaponId] of Object.entries(WEAPON_IDS)) {
-      const item = items[weaponId.toLowerCase()] || items[weaponId];
-      if (!item) { skins[weaponKey] = null; continue; }
+    // Normalize all item keys to lowercase for reliable lookup
+    for (const [rawKey, item] of Object.entries(rawItems)) {
+      const lkey = rawKey.toLowerCase();
+      const weaponKey = uuidToKey[lkey];
+      if (!weaponKey) continue;
 
-      const skinSocket = item.Sockets?.[SKIN_SOCKET];
+      // Try multiple socket key formats (Riot API casing can vary)
+      const skinSocket = item.Sockets?.[SKIN_SOCKET]
+        || item.Sockets?.[SKIN_SOCKET.toUpperCase()]
+        || Object.values(item.Sockets || {}).find(s => s?.Item?.TypeID?.toLowerCase().includes('skin'));
       const skinUuid = skinSocket?.Item?.ID?.toLowerCase();
+
       if (skinUuid && content.weaponSkins?.[skinUuid]) {
-        skins[weaponKey] = content.weaponSkins[skinUuid];
+        const entry = content.weaponSkins[skinUuid];
+        // Use weapon's own displayIcon as fallback when skin has no rendered icon
+        skins[weaponKey] = {
+          name: entry.name,
+          iconUrl: entry.iconUrl || content.weaponIcons?.[lkey] || null,
+        };
       } else {
-        skins[weaponKey] = null;
+        // No skin data — fall back to weapon's default icon so the slot still shows something
+        skins[weaponKey] = {
+          name: weaponKey.charAt(0).toUpperCase() + weaponKey.slice(1),
+          iconUrl: content.weaponIcons?.[lkey] || null,
+        };
       }
     }
 
@@ -488,6 +552,14 @@ function timeAgo(timestamp) {
   if (d > 0) return `${d}d ago`;
   if (h > 0) return `${h}h ago`;
   return 'just now';
+}
+
+// ─── Average rank helper ──────────────────────────────────────────────────────
+function avgRank(players) {
+  const ranked = players.filter(p => p.rankTier >= 3);
+  if (!ranked.length) return 'Unranked';
+  const avg = Math.round(ranked.reduce((s, p) => s + p.rankTier, 0) / ranked.length);
+  return tierName(avg);
 }
 
 // ─── Routes ───────────────────────────────────────────────────────────────────
@@ -573,18 +645,26 @@ app.get('/api/live-match', async (req, res) => {
     const historyMap = {};
     allPuuids.forEach((puuid, i) => { historyMap[puuid] = historyResults[i]; });
 
-    // Get loadouts (only available in coregame for ally, not pregame reliably)
+    // Get loadouts — try both endpoints; pregame gives full armory, coregame gives current round
     let loadoutMap = {};
-    if (!isPregame && matchId) {
+    if (matchId) {
       try {
-        const loadoutData = await getLoadouts(matchId, false);
+        const loadoutData = await getLoadouts(matchId, isPregame);
         if (loadoutData) loadoutMap = extractSkins(loadoutData, content);
       } catch (e) { /* skip */ }
+      // If coregame loadout was empty, also try the other endpoint
+      if (!isPregame && Object.keys(loadoutMap).length === 0) {
+        try {
+          const loadoutData = await getLoadouts(matchId, true);
+          if (loadoutData) loadoutMap = extractSkins(loadoutData, content);
+        } catch (e) { /* skip */ }
+      }
     }
 
     // Get map name
     const mapId = matchData.MapID?.toLowerCase() || '';
     const mapName = content.mapUrls[mapId] || 'Unknown Map';
+    const mapImage = content.mapImages?.[mapName] || null;
 
     // Format players
     function formatPlayer(p) {
@@ -622,16 +702,9 @@ app.get('/api/live-match', async (req, res) => {
     const myTeam = allyPlayers.map(formatPlayer);
     const enemyTeam = enemyPlayers.map(formatPlayer);
 
-    // Average rank
-    function avgRank(players) {
-      const ranked = players.filter(p => p.rankTier >= 3);
-      if (!ranked.length) return 'Unranked';
-      const avg = Math.round(ranked.reduce((s, p) => s + p.rankTier, 0) / ranked.length);
-      return tierName(avg);
-    }
-
     return res.json({
       mapName,
+      mapImage,
       gameMode: 'Competitive',
       isPregame,
       myTeam,
@@ -688,6 +761,7 @@ app.get('/api/history', async (req, res) => {
       try {
         const mapId = detail.matchInfo?.mapId?.toLowerCase() || '';
         const mapName = content.mapUrls[mapId] || 'Unknown Map';
+        const mapImg = content.mapImages?.[mapName] || null;
         const queue = detail.matchInfo?.queueID || 'competitive';
 
         // Find local player stats
@@ -720,6 +794,7 @@ app.get('/api/history', async (req, res) => {
         matches.push({
           matchId: update.MatchID,
           mapName,
+          mapImage: mapImg,
           gameMode: queue.charAt(0).toUpperCase() + queue.slice(1),
           result: won ? 'win' : 'loss',
           score: `${myRounds}-${enemyRounds}`,
@@ -743,10 +818,143 @@ app.get('/api/history', async (req, res) => {
   }
 });
 
-// Start server
-const PORT = 3001;
-app.listen(PORT, '127.0.0.1', () => {
-  console.log(`[traopd1] API server running on http://127.0.0.1:${PORT}`);
+// Current player info (for MENUS state)
+app.get('/api/me', async (req, res) => {
+  try {
+    const auth = await getAuthHeaders();
+    if (!auth) return res.status(503).json({ error: 'Not authenticated' });
+
+    const seasonId = await getCurrentSeason();
+    const [names, rank, history] = await Promise.all([
+      getPlayerNames([auth.puuid]),
+      getPlayerRank(auth.puuid, seasonId),
+      getCompetitiveHistory(auth.puuid, 5),
+    ]);
+
+    const nameInfo = names[auth.puuid] || { name: 'Unknown', tag: '#0000' };
+
+    return res.json({
+      puuid: auth.puuid,
+      name: nameInfo.name,
+      tag: nameInfo.tag,
+      agentName: '',
+      agentIconUrl: null,
+      rankTier: rank.rankTier,
+      rankName: tierName(rank.rankTier),
+      rr: rank.rr,
+      leaderboard: rank.leaderboard,
+      peakRankTier: rank.peakRankTier,
+      peakRankName: tierName(rank.peakRankTier),
+      wr: rank.wr,
+      games: rank.games,
+      accountLevel: 0,
+      incognito: false,
+      history,
+      skins: null,
+      isLocal: true,
+      teamId: '',
+    });
+  } catch (e) {
+    console.error('me error:', e.message);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
 });
+
+// Full player list for a past match (from match history)
+app.get('/api/match/:matchId/players', async (req, res) => {
+  const { matchId } = req.params;
+  try {
+    const auth = await getAuthHeaders();
+    if (!auth) return res.status(503).json({ error: 'Not authenticated' });
+
+    const content = await getContent();
+    const detail = await pdFetch(`/match-details/v1/matches/${matchId}`, 'get');
+    if (!detail) return res.status(404).json({ error: 'Match not found' });
+
+    const mapId = detail.matchInfo?.mapId?.toLowerCase() || '';
+    const mapName = content.mapUrls[mapId] || 'Unknown Map';
+    const mapImage = content.mapImages?.[mapName] || null;
+    const queue = detail.matchInfo?.queueID || 'competitive';
+
+    const localPlayerEntry = detail.players?.find(p => p.subject === auth.puuid);
+    const myTeamId = localPlayerEntry?.teamId || 'Red';
+
+    const myTeam = [];
+    const enemyTeam = [];
+
+    for (const p of (detail.players || [])) {
+      const puuid = p.subject;
+      const agentUuid = (p.characterId || '').toLowerCase();
+      const agentInfo = content.agents[agentUuid] || { name: 'Unknown', iconUrl: null };
+      const rankTier = p.competitiveTier || 0;
+
+      const playerObj = {
+        puuid,
+        name: p.gameName || 'Unknown',
+        tag: p.tagLine ? `#${p.tagLine}` : '#0000',
+        agentName: agentInfo.name,
+        agentIconUrl: agentInfo.iconUrl,
+        rankTier: rankTier >= 3 ? rankTier : 0,
+        rankName: tierName(rankTier),
+        rr: p.rankedRating || 0,
+        leaderboard: 0,
+        peakRankTier: 0,
+        peakRankName: '',
+        wr: 'N/A',
+        games: 0,
+        accountLevel: p.accountLevel || 0,
+        incognito: p.isIncognito || false,
+        history: [],
+        skins: null,
+        isLocal: puuid === auth.puuid,
+        teamId: p.teamId || '',
+        kills: p.stats?.kills || 0,
+        deaths: p.stats?.deaths || 0,
+        assists: p.stats?.assists || 0,
+      };
+
+      if (p.teamId === myTeamId) {
+        myTeam.push(playerObj);
+      } else {
+        enemyTeam.push(playerObj);
+      }
+    }
+
+    return res.json({
+      mapName,
+      mapImage,
+      gameMode: queue.charAt(0).toUpperCase() + queue.slice(1),
+      isPregame: false,
+      myTeam,
+      enemyTeam,
+      myTeamAvgRank: avgRank(myTeam),
+      enemyTeamAvgRank: avgRank(enemyTeam),
+    });
+  } catch (e) {
+    console.error('match players error:', e.message);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Start server
+if (require.main === module) {
+  const PORT = 3001;
+  app.listen(PORT, '127.0.0.1', () => {
+    console.log(`[traopd1] API server running on http://127.0.0.1:${PORT}`);
+  });
+} else {
+  // When required by electron, also listen
+  // Wait, electron/main.js expects it to be running.
+  // In electron/main.js: serverInstance = require('../server/valorant');
+  // Let's check how electron/main.js handles it.
+  const PORT = 3001;
+  app.listen(PORT, '127.0.0.1', () => {
+    console.log(`[traopd1] API server running on http://127.0.0.1:${PORT}`);
+  }).on('error', (e) => {
+    if (e.code === 'EADDRINUSE') {
+      console.log(`[traopd1] Port ${PORT} already in use, assuming server is already running.`);
+    }
+  });
+}
 
 module.exports = app;

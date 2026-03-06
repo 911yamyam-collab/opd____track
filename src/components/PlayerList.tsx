@@ -1,5 +1,5 @@
 import React from 'react';
-import { Player } from '../data/types';
+import { Player, PlayerDBEntry } from '../data/types';
 import PlayerCard from './PlayerCard';
 
 interface PlayerListProps {
@@ -7,31 +7,32 @@ interface PlayerListProps {
   avgRank: string;
   players: Player[];
   isEnemy?: boolean;
+  dbEntries?: PlayerDBEntry[];
   onPlayerClick?: (player: Player) => void;
 }
 
-export default function PlayerList({ teamName, avgRank, players, isEnemy = false, onPlayerClick }: PlayerListProps) {
+export default function PlayerList({ teamName, avgRank, players, isEnemy = false, dbEntries = [], onPlayerClick }: PlayerListProps) {
   if (!players || players.length === 0) {
     return (
-      <section className="space-y-4">
-        <div className={`flex justify-between items-end border-b ${isEnemy ? 'border-primary/30' : 'border-accent-cyan/30'} pb-2`}>
+      <section className="space-y-2">
+        <div className={`flex justify-between items-center border-b ${isEnemy ? 'border-primary/30' : 'border-accent-cyan/30'} pb-1`}>
           {isEnemy ? (
             <>
-              <span className="stat-label">Avg: {avgRank}</span>
-              <h2 className="text-primary font-bold uppercase tracking-widest flex items-center text-sm">
-                {teamName}<span className="w-1.5 h-1.5 bg-primary ml-2"></span>
+              <span className="text-[9px] opacity-40 font-mono">Avg: {avgRank}</span>
+              <h2 className="text-primary font-bold uppercase tracking-widest flex items-center text-[10px]">
+                {teamName}<span className="w-1 h-1 bg-primary ml-1.5" />
               </h2>
             </>
           ) : (
             <>
-              <h2 className="text-accent-cyan font-bold uppercase tracking-widest flex items-center text-sm">
-                <span className="w-1.5 h-1.5 bg-accent-cyan mr-2"></span>{teamName}
+              <h2 className="text-accent-cyan font-bold uppercase tracking-widest flex items-center text-[10px]">
+                <span className="w-1 h-1 bg-accent-cyan mr-1.5" />{teamName}
               </h2>
-              <span className="stat-label">Avg: {avgRank}</span>
+              <span className="text-[9px] opacity-40 font-mono">Avg: {avgRank}</span>
             </>
           )}
         </div>
-        <div className="flex items-center justify-center py-8 opacity-30">
+        <div className="flex items-center justify-center py-4 opacity-30">
           <p className="text-xs uppercase tracking-wider font-bold">No data available</p>
         </div>
       </section>
@@ -39,21 +40,21 @@ export default function PlayerList({ teamName, avgRank, players, isEnemy = false
   }
 
   return (
-    <section className="space-y-4">
-      <div className={`flex justify-between items-end border-b ${isEnemy ? 'border-primary/30' : 'border-accent-cyan/30'} pb-2`}>
+    <section className="space-y-1">
+      <div className={`flex justify-between items-center border-b ${isEnemy ? 'border-primary/30' : 'border-accent-cyan/30'} pb-1`}>
         {isEnemy ? (
           <>
-            <span className="stat-label">Avg: {avgRank}</span>
-            <h2 className="text-primary font-bold uppercase tracking-widest flex items-center text-sm">
-              {teamName}<span className="w-1.5 h-1.5 bg-primary ml-2"></span>
+            <span className="text-[9px] opacity-40 font-mono">Avg: {avgRank}</span>
+            <h2 className="text-primary font-bold uppercase tracking-widest flex items-center text-[10px]">
+              {teamName}<span className="w-1 h-1 bg-primary ml-1.5" />
             </h2>
           </>
         ) : (
           <>
-            <h2 className="text-accent-cyan font-bold uppercase tracking-widest flex items-center text-sm">
-              <span className="w-1.5 h-1.5 bg-accent-cyan mr-2"></span>{teamName}
+            <h2 className="text-accent-cyan font-bold uppercase tracking-widest flex items-center text-xs">
+              <span className="w-1 h-1 bg-accent-cyan mr-1.5" />{teamName}
             </h2>
-            <span className="stat-label">Avg: {avgRank}</span>
+            <span className="text-[9px] opacity-40 font-mono">Avg: {avgRank}</span>
           </>
         )}
       </div>
@@ -62,6 +63,7 @@ export default function PlayerList({ teamName, avgRank, players, isEnemy = false
           key={player.puuid}
           player={player}
           isEnemy={isEnemy}
+          dbEntry={dbEntries.find(d => d.puuid === player.puuid) ?? null}
           onClick={() => onPlayerClick?.(player)}
         />
       ))}

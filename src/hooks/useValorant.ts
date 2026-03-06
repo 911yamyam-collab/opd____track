@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { GameState, LiveMatchData, MatchHistoryEntry } from '../data/types';
+import { GameState, LiveMatchData, MatchHistoryEntry, Player } from '../data/types';
 
 const API_BASE = 'http://127.0.0.1:3001';
 
@@ -7,6 +7,9 @@ interface ValorantState {
   gameState: GameState;
   queueId: string;
   match: LiveMatchData | null;
+  lastMatch: LiveMatchData | null;   // preserved after match ends
+  matchEnded: boolean;               // flag: match just ended, showing stale data
+  myInfo: Player | null;             // local player info for MENUS state
   history: MatchHistoryEntry[];
   loading: boolean;
   error: string | null;
@@ -18,6 +21,9 @@ export function useValorant() {
     gameState: 'loading',
     queueId: '',
     match: null,
+    lastMatch: null,
+    matchEnded: false,
+    myInfo: null,
     history: [],
     loading: true,
     error: null,
@@ -26,6 +32,7 @@ export function useValorant() {
 
   const prevGameState = useRef<GameState>('loading');
   const isFetchingMatch = useRef(false);
+  const isFetchingMyInfo = useRef(false);
   const wasInMatch = useRef(false);
 
   const fetchStatus = useCallback(async () => {
@@ -52,6 +59,20 @@ export function useValorant() {
     }
   }, []);
 
+  const fetchMyInfo = useCallback(async () => {
+    if (isFetchingMyInfo.current) return null;
+    isFetchingMyInfo.current = true;
+    try {
+      const res = await fetch(`${API_BASE}/api/me`, { signal: AbortSignal.timeout(20000) });
+      if (!res.ok) return null;
+      return await res.json() as Player;
+    } catch {
+      return null;
+    } finally {
+      isFetchingMyInfo.current = false;
+    }
+  }, []);
+
   const fetchHistory = useCallback(async () => {
     try {
       const res = await fetch(`${API_BASE}/api/history`, { signal: AbortSignal.timeout(30000) });
@@ -63,11 +84,23 @@ export function useValorant() {
     }
   }, []);
 
+  const fetchMatchPlayers = useCallback(async (matchId: string): Promise<LiveMatchData | null> => {
+    try {
+      const res = await fetch(`${API_BASE}/api/match/${matchId}/players`, { signal: AbortSignal.timeout(30000) });
+      if (!res.ok) return null;
+      return await res.json() as LiveMatchData;
+    } catch {
+      return null;
+    }
+  }, []);
+
   const poll = useCallback(async () => {
     const { running, gameState, queueId } = await fetchStatus();
 
     const inMatch = gameState === 'INGAME' || gameState === 'PREGAME';
     const stateChanged = gameState !== prevGameState.current;
+    const wasInMatchPrev = prevGameState.current === 'INGAME' || prevGameState.current === 'PREGAME';
+    const justLeftMatch = stateChanged && wasInMatchPrev && !inMatch;
     prevGameState.current = gameState;
 
     setState(prev => ({
@@ -76,35 +109,32 @@ export function useValorant() {
       queueId,
       loading: false,
       error: running ? null : 'VALORANT is not running',
-      // Clear match data when leaving a match, but not while a fetch is in-flight
-      match: (stateChanged && !inMatch && !isFetchingMatch.current) ? null : prev.match,
+      // Keep match data when leaving (show as ended), clear only when entering new match
+      match: (stateChanged && inMatch) ? null : prev.match,
+      lastMatch: justLeftMatch ? prev.match : prev.lastMatch,
+      matchEnded: justLeftMatch ? true : (inMatch ? false : prev.matchEnded),
     }));
 
-    // Track match → menus transition for history refetch
     if (inMatch) {
       wasInMatch.current = true;
-    }
-
-    if (inMatch) {
       const match = await fetchMatch();
       if (match) {
-        setState(prev => ({ ...prev, match, lastUpdated: Date.now() }));
+        setState(prev => ({ ...prev, match, matchEnded: false, lastUpdated: Date.now() }));
       }
     }
   }, [fetchStatus, fetchMatch]);
 
-  // Load history once on mount and when we leave a match
+  // Load history on mount
   useEffect(() => {
     fetchHistory().then(history => {
       setState(prev => ({ ...prev, history }));
     });
   }, [fetchHistory]);
 
-  // Refresh history only when transitioning from INGAME/PREGAME → MENUS
+  // Refresh history + resolve incognito names when transitioning from INGAME → MENUS
   useEffect(() => {
     if (state.gameState === 'MENUS' && wasInMatch.current) {
       wasInMatch.current = false;
-      // Small delay to let Riot update their API
       const timer = setTimeout(() => {
         fetchHistory().then(history => {
           setState(prev => ({ ...prev, history }));
@@ -114,9 +144,18 @@ export function useValorant() {
     }
   }, [state.gameState, fetchHistory]);
 
-  // Poll for status every 5 seconds, match data every 5 seconds when in game
+  // Fetch myInfo when in MENUS and no myInfo yet
   useEffect(() => {
-    poll(); // immediate first poll
+    if ((state.gameState === 'MENUS' || state.gameState === 'DISCONNECTED') && !state.myInfo && !isFetchingMyInfo.current) {
+      fetchMyInfo().then(myInfo => {
+        if (myInfo) setState(prev => ({ ...prev, myInfo }));
+      });
+    }
+  }, [state.gameState, state.myInfo, fetchMyInfo]);
+
+  // Poll every 5 seconds
+  useEffect(() => {
+    poll();
     const interval = setInterval(poll, 5000);
     return () => clearInterval(interval);
   }, [poll]);
@@ -126,5 +165,5 @@ export function useValorant() {
     await poll();
   }, [poll]);
 
-  return { ...state, refresh };
+  return { ...state, refresh, fetchMatchPlayers };
 }

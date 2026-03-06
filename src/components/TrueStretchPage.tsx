@@ -67,6 +67,7 @@ export default function TrueStretchPage() {
           )}
           <button
             onClick={applyResolution}
+            onClick={() => setResolution(stretchType === 'custom' ? `${customW}x${customH}` : (presets.find(p => p.label === stretchType)?.res ?? presets[0].res))}
             className="w-full bg-accent-cyan/10 text-accent-cyan border border-accent-cyan/30 rounded py-2.5 text-sm uppercase font-bold tracking-wider hover:bg-accent-cyan/20 transition-colors"
           >Apply Stretch</button>
         </div>

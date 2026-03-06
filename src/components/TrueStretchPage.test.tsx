@@ -37,4 +37,27 @@ describe('TrueStretchPage', () => {
     fireEvent.click(screen.getByText('Apply Stretch'));
     expect(screen.getAllByText('1280x1024')).toHaveLength(2);
   });
+  it('Apply Stretch uses correct preset for selected stretch type', () => {
+    render(<TrueStretchPage />);
+    // Select 5:4 stretch type from the ratio buttons
+    const ratioButtons = screen.getAllByRole('button');
+    const btn54 = ratioButtons.find(b => b.textContent === '5:4');
+    expect(btn54).toBeDefined();
+    fireEvent.click(btn54!);
+    fireEvent.click(screen.getByText('Apply Stretch'));
+    // 5:4 preset is 1280x1024, should appear in current resolution display
+    expect(screen.getAllByText('1280x1024')).toHaveLength(2);
+  });
+
+  it('Apply Stretch uses 16:10 preset when selected', () => {
+    render(<TrueStretchPage />);
+    // Select 16:10 stretch type from the ratio buttons
+    const ratioButtons = screen.getAllByRole('button');
+    const btn1610 = ratioButtons.find(b => b.textContent === '16:10');
+    expect(btn1610).toBeDefined();
+    fireEvent.click(btn1610!);
+    fireEvent.click(screen.getByText('Apply Stretch'));
+    // 16:10 preset is 1680x1050
+    expect(screen.getAllByText('1680x1050')).toHaveLength(2);
+  });
 });

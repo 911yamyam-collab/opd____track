@@ -333,7 +333,7 @@ async function getContent() {
     contentCache = { agents, mapUrls, mapImages, weaponSkins, weaponNames, weaponIcons, timestamp: now };
     return contentCache;
   } catch (e) {
-    return contentCache || { agents: {}, mapUrls: {}, weaponSkins: {}, weaponNames: {}, timestamp: now };
+    return contentCache || { agents: {}, mapUrls: {}, mapImages: {}, weaponSkins: {}, weaponNames: {}, weaponIcons: {}, timestamp: now };
   }
 }
 

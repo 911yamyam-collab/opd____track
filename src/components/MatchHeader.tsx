@@ -14,7 +14,7 @@ export default function MatchHeader({ mapName = 'Loading...', mapImage, gameMode
       {mapImage && (
         <div
           className="absolute inset-0 bg-cover bg-center"
-          style={{ backgroundImage: `url(${mapImage})` }}
+          style={{ backgroundImage: `url('${mapImage.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}')` }}
         >
           <div className="absolute inset-0 bg-gradient-to-r from-[#0a0e14]/95 via-[#0a0e14]/80 to-[#0a0e14]/95" />
         </div>

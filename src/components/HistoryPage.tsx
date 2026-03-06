@@ -74,7 +74,7 @@ export default function HistoryPage({ matches, fetchMatchPlayers, dbEntries = []
                 {match.mapImage && (
                   <div
                     className="absolute inset-0 bg-cover bg-center opacity-10"
-                    style={{ backgroundImage: `url(${match.mapImage})` }}
+                    style={{ backgroundImage: `url('${match.mapImage.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}')` }}
                   />
                 )}
 

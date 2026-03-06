@@ -5,12 +5,14 @@ const https = require('https');
 const fs = require('fs');
 const path = require('path');
 const axios = require('axios');
+const { config } = require('./config');
 
 const app = express();
 app.use(express.json());
 app.use((req, res, next) => {
   const origin = req.headers.origin;
-  if (origin && (origin.startsWith('http://localhost') || origin.startsWith('http://127.0.0.1'))) {
+  // Only allow exact match for localhost origins (not prefix match to prevent attacks)
+  if (origin && config.corsAllowedOrigins.includes(origin)) {
     res.header('Access-Control-Allow-Origin', origin);
   }
   res.header('Access-Control-Allow-Methods', 'GET, PUT, POST, OPTIONS');
@@ -18,14 +20,24 @@ app.use((req, res, next) => {
   next();
 });
 
-// Disable SSL verification for all requests (Riot uses self-signed certs locally)
-const httpsAgent = new https.Agent({ rejectUnauthorized: false });
-const axiosInstance = axios.create({ httpsAgent });
+// Create separate axios instances for local (self-signed) and external (verified) requests
+// Local Riot Client uses self-signed certs, but we should verify external APIs
+const localHttpsAgent = new https.Agent({ rejectUnauthorized: false });
+const localAxios = axios.create({ httpsAgent: localHttpsAgent });
+const externalAxios = axios.create(); // Uses default SSL verification
+
+// Simple error logger
+function logError(context, error) {
+  const timestamp = new Date().toISOString();
+  console.error(`[${timestamp}] [${context}]`, error?.message || error);
+  if (error?.response?.data) {
+    console.error(`[${timestamp}] [${context}] Response:`, error.response.data);
+  }
+}
 
 // ─── Cache ────────────────────────────────────────────────────────────────────
 let authCache = null;          // { headers, puuid, pdUrl, glzUrl, region }
 let contentCache = null;       // { agents, mapUrls, seasons, timestamp }
-const CONTENT_TTL = 60 * 60 * 1000; // 1 hour
 
 // ─── Concurrency limiter ──────────────────────────────────────────────────────
 async function batchedPromises(items, fn, concurrency = 3) {
@@ -154,12 +166,13 @@ async function getAuthHeaders(forceRefresh = false) {
 
   let entitlements;
   try {
-    const res = await axiosInstance.get(
+    const res = await localAxios.get(
       `https://127.0.0.1:${lockfile.port}/entitlements/v1/token`,
       { headers: localHeaders, timeout: 5000 }
     );
     entitlements = res.data;
   } catch (e) {
+    logError('getAuthHeaders:entitlements', e);
     return null;
   }
 
@@ -203,18 +216,20 @@ async function pdFetch(endpoint, method = 'get', body = null) {
   try {
     const config = { headers: auth.headers, timeout: 10000 };
     if (body) config.data = body;
-    const res = await axiosInstance.request({ method, url: auth.pdUrl + endpoint, ...config });
+    const res = await externalAxios.request({ method, url: auth.pdUrl + endpoint, ...config });
     if (res.data?.errorCode === 'BAD_CLAIMS') {
       authCache = null;
       const auth2 = await getAuthHeaders(true);
       if (!auth2) return null;
-      const res2 = await axiosInstance.request({ method, url: auth2.pdUrl + endpoint, headers: auth2.headers, timeout: 10000 });
+      const res2 = await externalAxios.request({ method, url: auth2.pdUrl + endpoint, headers: auth2.headers, timeout: 10000 });
       return res2.data;
     }
     return res.data;
   } catch (e) {
     if (e.response?.data?.errorCode === 'BAD_CLAIMS') {
       authCache = null;
+    } else {
+      logError('pdFetch', e);
     }
     return null;
   }
@@ -224,16 +239,17 @@ async function glzFetch(endpoint, method = 'get') {
   const auth = await getAuthHeaders();
   if (!auth) return null;
   try {
-    const res = await axiosInstance.request({ method, url: auth.glzUrl + endpoint, headers: auth.headers, timeout: 10000 });
+    const res = await externalAxios.request({ method, url: auth.glzUrl + endpoint, headers: auth.headers, timeout: 10000 });
     if (res.data?.errorCode === 'BAD_CLAIMS') {
       authCache = null;
       const auth2 = await getAuthHeaders(true);
       if (!auth2) return null;
-      const res2 = await axiosInstance.request({ method, url: auth2.glzUrl + endpoint, headers: auth2.headers, timeout: 10000 });
+      const res2 = await externalAxios.request({ method, url: auth2.glzUrl + endpoint, headers: auth2.headers, timeout: 10000 });
       return res2.data;
     }
     return res.data;
   } catch (e) {
+    logError('glzFetch', e);
     return null;
   }
 }
@@ -242,7 +258,7 @@ async function localFetch(endpoint, method = 'get') {
   const auth = await getAuthHeaders();
   if (!auth) return null;
   try {
-    const res = await axiosInstance.request({
+    const res = await localAxios.request({
       method,
       url: `https://127.0.0.1:${auth.lockfile.port}${endpoint}`,
       headers: auth.localHeaders,
@@ -250,6 +266,7 @@ async function localFetch(endpoint, method = 'get') {
     });
     return res.data;
   } catch (e) {
+    logError('localFetch', e);
     return null;
   }
 }
@@ -257,13 +274,13 @@ async function localFetch(endpoint, method = 'get') {
 // ─── Content (agents, maps, seasons) ─────────────────────────────────────────
 async function getContent() {
   const now = Date.now();
-  if (contentCache && now - contentCache.timestamp < CONTENT_TTL) return contentCache;
+  if (contentCache && now - contentCache.timestamp < config.contentCacheTTL) return contentCache;
 
   try {
     const [agentsRes, mapsRes, weaponsRes] = await Promise.all([
-      axios.get('https://valorant-api.com/v1/agents?isPlayableCharacter=true', { timeout: 10000 }),
-      axios.get('https://valorant-api.com/v1/maps', { timeout: 10000 }),
-      axios.get('https://valorant-api.com/v1/weapons', { timeout: 10000 }),
+      externalAxios.get('https://valorant-api.com/v1/agents?isPlayableCharacter=true', { timeout: 10000 }),
+      externalAxios.get('https://valorant-api.com/v1/maps', { timeout: 10000 }),
+      externalAxios.get('https://valorant-api.com/v1/weapons', { timeout: 10000 }),
     ]);
 
     const agents = {};
@@ -325,7 +342,7 @@ async function getCurrentSeason() {
   const auth = await getAuthHeaders();
   if (!auth) return null;
   try {
-    const res = await axiosInstance.get(
+    const res = await externalAxios.get(
       `https://shared.${auth.region}.a.pvp.net/content-service/v3/content`,
       { headers: auth.headers, timeout: 10000 }
     );
@@ -334,7 +351,7 @@ async function getCurrentSeason() {
       if (s.IsActive && s.Type === 'act') return s.ID;
     }
   } catch (e) {
-    // ignore
+    logError('getCurrentSeason', e);
   }
   return null;
 }
@@ -427,7 +444,7 @@ async function getPlayerNames(puuids) {
   const auth = await getAuthHeaders();
   if (!auth) return {};
   try {
-    const res = await axiosInstance.put(
+    const res = await externalAxios.put(
       `${auth.pdUrl}/name-service/v2/players`,
       puuids,
       { headers: auth.headers, timeout: 10000 }
@@ -865,6 +882,12 @@ app.get('/api/me', async (req, res) => {
 // Full player list for a past match (from match history)
 app.get('/api/match/:matchId/players', async (req, res) => {
   const { matchId } = req.params;
+
+  // Validate matchId format (should be UUID)
+  if (!matchId || typeof matchId !== 'string' || matchId.length < 10) {
+    return res.status(400).json({ error: 'Invalid match ID' });
+  }
+
   try {
     const auth = await getAuthHeaders();
     if (!auth) return res.status(503).json({ error: 'Not authenticated' });
@@ -940,21 +963,16 @@ app.get('/api/match/:matchId/players', async (req, res) => {
 
 // Start server
 if (require.main === module) {
-  const PORT = 3001;
-  app.listen(PORT, '127.0.0.1', () => {
-    console.log(`[traopd1] API server running on http://127.0.0.1:${PORT}`);
+  app.listen(config.serverPort, config.serverHost, () => {
+    console.log(`[traopd1] API server running on http://${config.serverHost}:${config.serverPort}`);
   });
 } else {
   // When required by electron, also listen
-  // Wait, electron/main.js expects it to be running.
-  // In electron/main.js: serverInstance = require('../server/valorant');
-  // Let's check how electron/main.js handles it.
-  const PORT = 3001;
-  app.listen(PORT, '127.0.0.1', () => {
-    console.log(`[traopd1] API server running on http://127.0.0.1:${PORT}`);
+  app.listen(config.serverPort, config.serverHost, () => {
+    console.log(`[traopd1] API server running on http://${config.serverHost}:${config.serverPort}`);
   }).on('error', (e) => {
     if (e.code === 'EADDRINUSE') {
-      console.log(`[traopd1] Port ${PORT} already in use, assuming server is already running.`);
+      console.log(`[traopd1] Port ${config.serverPort} already in use, assuming server is already running.`);
     }
   });
 }

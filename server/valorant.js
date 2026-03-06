@@ -75,8 +75,11 @@ const SKIN_SOCKET = 'bcef87d6-209b-46c6-8b19-fbe40bd95abc';
 
 // ─── Lockfile ─────────────────────────────────────────────────────────────────
 function getLockfile() {
+  const localAppData = process.env.LOCALAPPDATA;
+  if (!localAppData) return null;
+
   const lockfilePath = path.join(
-    process.env.LOCALAPPDATA,
+    localAppData,
     'Riot Games', 'Riot Client', 'Config', 'lockfile'
   );
   if (!fs.existsSync(lockfilePath)) return null;
@@ -87,8 +90,11 @@ function getLockfile() {
 
 // ─── Region & Version from VALORANT log ──────────────────────────────────────
 function getRegionAndVersion() {
+  const localAppData = process.env.LOCALAPPDATA;
+  if (!localAppData) return null;
+
   const logPath = path.join(
-    process.env.LOCALAPPDATA,
+    localAppData,
     'VALORANT', 'Saved', 'Logs', 'ShooterGame.log'
   );
   if (!fs.existsSync(logPath)) return null;
